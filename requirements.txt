@@ -1,0 +1,6 @@
+anthropic>=0.51.0
+openai>=1.76.0
+pydantic>=2.7.0
+loguru>=0.7.2
+pyyaml>=6.0.1
+python-dotenv>=1.0.1

@@ -1,0 +1,5 @@
+Module name: packet_counter
+Inputs: clk, rst_n, valid_in, packet_len[15:0]
+Outputs: packet_count[31:0], busy
+Behavior: increment packet_count when valid_in is asserted. busy goes high for one cycle during update.
+Timing: sample inputs on rising edge of clk. rst_n is active low.
