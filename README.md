@@ -21,7 +21,16 @@ Implemented features today:
 - `clear` command to reset in-memory context
 - `SpecSummarySkill` for summarizing hardware specs
 - `/spec` command with paste mode and file mode
+- `VerilogTemplateSkill` for RTL skeleton generation
+- `/rtl` to generate Verilog from the latest structured spec summary
+- `/rtl <file.v>` to save a single generated module
+- `/rtl <dir>` to save multiple generated modules when the spec suggests submodules
 - structured spec output internally via Pydantic, with markdown rendering for CLI display
+- smarter RTL skeleton inference for likely sequential vs combinational outputs
+- top-level plus submodule skeleton generation for multi-module specs
+- specialized controller/datapath/fifo/arbiter RTL templates
+- local multi-module sample spec for regression-style testing
+- harness regression script for deterministic RTL generation checks
 
 ## Project layout
 
@@ -40,11 +49,11 @@ SiFlowAgent/
 
 ## Requirements
 
-- Python: `D:/anaconda/envs/pytorch/python.exe`
+- Python: use your local Python 3.11+ environment
 - Install dependencies:
 
 ```bash
-"D:/anaconda/envs/pytorch/python.exe" -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -67,7 +76,7 @@ The project currently defaults to a `messages_api` style backend when loading th
 ## Running the CLI
 
 ```bash
-"D:/anaconda/envs/pytorch/python.exe" main.py
+python main.py
 ```
 
 You can then use:
@@ -76,6 +85,9 @@ You can then use:
 - `clear` to clear the current in-memory session context
 - `/spec` to paste a hardware spec manually
 - `/spec <path>` to summarize a spec file from disk
+- `/rtl` to print the top-level generated Verilog
+- `/rtl <file.v>` to save a single Verilog file
+- `/rtl <dir>` to save all generated Verilog files for a multi-module design
 - `exit` or `quit` to leave the CLI
 
 ## Example: summarize a spec from file
@@ -83,6 +95,34 @@ You can then use:
 ```text
 /spec data/sample_spec.txt
 ```
+
+## Example: generate RTL and save it
+
+```text
+/rtl data/generated_packet_counter.v
+```
+
+## Example: generate a multi-module RTL directory
+
+```text
+/spec data/sample_multi_module_spec.txt
+/rtl rtl/
+```
+
+## Harness regression test
+
+Run the deterministic RTL regression harness:
+
+```bash
+python harness/regression_rtl.py
+```
+
+This script:
+
+- builds a fixed structured multi-module summary locally
+- generates `system_top/controller/datapath/fifo/arbiter` Verilog files
+- writes them to `data/harness_out/`
+- checks for expected filenames and key RTL fragments
 
 ## Architecture overview
 
@@ -114,6 +154,7 @@ Current skills:
 
 - `hello_siflow`
 - `spec_summary`
+- `verilog_template`
 
 ### Structured spec output
 
@@ -125,17 +166,32 @@ Current skills:
 - timing/control notes
 - constraints
 - open questions
+- inferred submodules for multi-module specs
+- high-level interconnect notes
 
 That structured result is then rendered into markdown for CLI output.
+
+### RTL skeleton generation
+
+`VerilogTemplateSkill` consumes `SpecSummaryResult` and builds Verilog by:
+
+- normalizing port widths into standard Verilog ranges
+- inferring likely sequential outputs from timing/behavior text
+- inferring likely combinational outputs when descriptions indicate decode/select-style logic
+- keeping one output signal per `always` block
+- generating a top module plus child module stubs when `submodules` are present
+- generating specialized templates for controller/datapath/fifo/arbiter blocks
+- producing top-level wire declarations and `.port(signal)` instance skeletons
 
 ## Next steps
 
 Suggested next milestones:
 
-- add `VerilogTemplateSkill`
 - route normal chat into skill selection automatically
-- add regression cases in `harness/`
+- add more regression cases in `harness/`
 - persist sessions beyond a single CLI run
+- improve RTL skeleton filling beyond TODO placeholders
+- infer submodule ports and top-level wiring more precisely
 
 ## Security note
 

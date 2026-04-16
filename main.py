@@ -26,7 +26,11 @@ async def main() -> None:
         print("LLM client not configured. Set SIFLOW_LLM_BASE_URL, SIFLOW_LLM_API_KEY, and SIFLOW_LLM_MODEL to enable real model calls.")
         return
 
-    print("SiFlowAgent CLI ready. Type 'clear' to reset context, '/spec' or '/spec <path>' to summarize a spec, 'exit' or 'quit' to stop.")
+    print(
+        "SiFlowAgent CLI ready. Type 'clear' to reset context, '/spec' or '/spec <path>' to summarize a spec, "
+        "'/rtl' to generate Verilog from the last spec summary, '/rtl <file.v>' to save one module, "
+        "'/rtl <dir>' to save multiple generated modules, 'exit' or 'quit' to stop."
+    )
 
     while True:
         user_input = input("You> ").strip()
@@ -38,6 +42,40 @@ async def main() -> None:
         if user_input.lower() == "clear":
             context_manager.clear()
             print("Context cleared.")
+            continue
+        if user_input.startswith("/rtl"):
+            parts = user_input.split(maxsplit=1)
+            try:
+                template_result = await orchestrator.build_verilog_template()
+            except RuntimeError as error:
+                print(f"SiFlowAgent> {error}")
+                continue
+
+            if len(parts) == 2:
+                output_path = Path(parts[1]).expanduser()
+                if not output_path.is_absolute():
+                    output_path = project_root / output_path
+
+                if output_path.suffix.lower() == ".v":
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(template_result.verilog_code + "\n", encoding="utf-8")
+                    print(f"SiFlowAgent> Verilog saved to {output_path}")
+                else:
+                    output_path.mkdir(parents=True, exist_ok=True)
+                    written_files: list[str] = []
+                    for module in template_result.modules:
+                        module_path = output_path / module.file_name
+                        module_path.write_text(module.verilog_code + "\n", encoding="utf-8")
+                        written_files.append(str(module_path))
+                    print("SiFlowAgent> Generated modules:")
+                    for file_name in written_files:
+                        print(file_name)
+            else:
+                print(f"SiFlowAgent>\n{template_result.verilog_code}")
+                if len(template_result.modules) > 1:
+                    print("SiFlowAgent> Additional submodule files ready:")
+                    for module in template_result.modules[1:]:
+                        print(module.file_name)
             continue
         if user_input.startswith("/spec"):
             parts = user_input.split(maxsplit=1)

@@ -1,0 +1,8 @@
+Module name: system_top
+Inputs: clk, rst_n, start, data_in[31:0], req[3:0]
+Outputs: data_out[31:0], busy, grant[3:0]
+Behavior: top integrates controller, datapath, fifo, and arbiter submodules. controller receives start and arbiter grant, then drives ctrl_enable and ctrl_valid. datapath computes data_out from data_in when enabled and may accumulate or register intermediate values. fifo buffers datapath results between stages with wr_en, rd_en, full, and empty style behavior. arbiter selects one requester from req using round-robin style grant behavior.
+Timing: sample inputs on rising edge of clk. rst_n is active low. controller and datapath are synchronous. fifo uses synchronous write and configurable read style. arbiter updates grant on clock boundaries.
+Constraints: keep one output signal per always block unless the conditions are exactly identical.
+Submodules: controller, datapath, fifo, arbiter.
+Interconnects: controller drives ctrl_enable and ctrl_valid into datapath. datapath output can feed fifo din. fifo dout can feed later processing. arbiter grant feeds controller request handling.

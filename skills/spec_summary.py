@@ -17,6 +17,11 @@ class SignalSummary(BaseModel):
     description: str = Field(default="", description="Signal purpose or notes")
 
 
+class SubmoduleSummary(BaseModel):
+    name: str = Field(..., description="Submodule name")
+    role: str = Field(default="", description="Submodule responsibility")
+
+
 class SpecSummaryResult(BaseModel):
     module_name: str | None = Field(default=None)
     overview: str = Field(default="")
@@ -25,6 +30,8 @@ class SpecSummaryResult(BaseModel):
     timing_and_control: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
+    submodules: list[SubmoduleSummary] = Field(default_factory=list)
+    interconnects: list[str] = Field(default_factory=list)
     markdown_summary: str = Field(default="")
 
 
@@ -51,7 +58,10 @@ class SpecSummarySkill(BaseSkill):
                     '{"module_name": string|null, "overview": string, "interfaces": '
                     '[{"name": string, "direction": string, "width": string, "description": string}], '
                     '"functional_behavior": [string], "timing_and_control": [string], '
-                    '"constraints": [string], "open_questions": [string]}. '
+                    '"constraints": [string], "open_questions": [string], '
+                    '"submodules": [{"name": string, "role": string}], "interconnects": [string]}. '
+                    "If the spec implies a multi-module architecture, list the likely submodules and high-level interconnect notes. "
+                    "If it does not, return empty arrays for submodules and interconnects. "
                     "Do not invent facts. If a field is unknown, use null, an empty string, or an empty list."
                 ),
                 messages=[
@@ -61,7 +71,7 @@ class SpecSummarySkill(BaseSkill):
                     }
                 ],
                 temperature=0.1,
-                max_tokens=1400,
+                max_tokens=1800,
             )
         )
 
@@ -106,6 +116,22 @@ class SpecSummarySkill(BaseSkill):
         lines.append("## Constraints")
         if result.constraints:
             lines.extend(f"- {item}" for item in result.constraints)
+        else:
+            lines.append("- Not specified.")
+        lines.append("")
+
+        lines.append("## Submodules")
+        if result.submodules:
+            for submodule in result.submodules:
+                role = f" - {submodule.role}" if submodule.role else ""
+                lines.append(f"- `{submodule.name}`{role}")
+        else:
+            lines.append("- None.")
+        lines.append("")
+
+        lines.append("## Interconnects")
+        if result.interconnects:
+            lines.extend(f"- {item}" for item in result.interconnects)
         else:
             lines.append("- Not specified.")
         lines.append("")

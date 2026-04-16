@@ -11,6 +11,7 @@ from core.llm_client import BaseLLMClient, LLMRequest
 from skills.hello import HelloSiFlowSkill
 from skills.registry import SkillRegistry
 from skills.spec_summary import SpecSummarySkill
+from skills.verilog_template import VerilogModuleFile, VerilogTemplateResult, VerilogTemplateSkill
 
 
 class Orchestrator:
@@ -28,6 +29,7 @@ class Orchestrator:
 
     def _register_default_skills(self) -> None:
         self.skill_registry.register(HelloSiFlowSkill(context_manager=self.context_manager))
+        self.skill_registry.register(VerilogTemplateSkill(context_manager=self.context_manager))
         if self.llm_client is not None:
             self.skill_registry.register(
                 SpecSummarySkill(context_manager=self.context_manager, llm_client=self.llm_client)
@@ -64,6 +66,30 @@ class Orchestrator:
         result = await self.skill_registry.execute("spec_summary", spec_text=spec_text)
         logger.info("Executed spec_summary skill")
         return result.markdown_summary
+
+    async def build_verilog_template(self) -> VerilogTemplateResult:
+        spec_summary = self.context_manager.get_state("last_spec_summary")
+        if not spec_summary:
+            raise RuntimeError("No spec summary available. Run /spec first.")
+
+        self.context_manager.set_state("last_task", "verilog_template")
+        result = await self.skill_registry.execute("verilog_template", spec_summary=spec_summary)
+        logger.info("Executed verilog_template skill")
+        return result
+
+    async def generate_verilog_template(self) -> str:
+        result = await self.build_verilog_template()
+        return result.verilog_code
+
+    async def generate_verilog_modules(self) -> list[VerilogModuleFile]:
+        result = await self.build_verilog_template()
+        return result.modules or [
+            VerilogModuleFile(
+                module_name=result.module_name,
+                file_name=f"{result.module_name}.v",
+                verilog_code=result.verilog_code,
+            )
+        ]
 
     async def chat(self, user_input: str, prompt_name: str = "default") -> str:
         if self.llm_client is None:
