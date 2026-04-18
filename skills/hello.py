@@ -10,7 +10,8 @@ class HelloSiFlowSkill(BaseSkill):
     def __init__(self, context_manager: ContextManager) -> None:
         super().__init__(
             name="hello_siflow",
-            description="Return a greeting for the SiFlowAgent framework",
+            description="Return a built-in greeting for the SiFlowAgent framework. Use when the user asks what this agent is or requests a hello.",
+            parameters_schema={},
         )
         self.context_manager = context_manager
 

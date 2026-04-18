@@ -1,0 +1,34 @@
+id: multi_module_system
+description: |
+  Multi-submodule system (controller + datapath + fifo + arbiter). Tests whether
+  the agent tiers can drive multi-module generation and keep the result clean.
+preload_spec_file: data/sample_multi_module_spec.txt
+goal: |
+  Produce the multi-module RTL skeleton from the current spec summary, and then
+  make sure the result is reviewed for quality. Fix any issues if they exist.
+tiers:
+  - agent
+  - multi
+checks:
+  require_completed: true
+  min_modules: 5
+  lint:
+    module_count_min: 5
+    reset_missing_count_max: 0
+    empty_always_count_max: 0
+  contains_all:
+    - "module system_top"
+    - "module controller"
+    - "module datapath"
+    - "module fifo"
+    - "module arbiter"
+  max_llm_calls:
+    agent: 18
+    multi: 26
+judge:
+  enabled: false
+  pass_threshold: 0.7
+  criteria: |
+    The output includes a coherent top-level module plus distinct submodules
+    for controller, datapath, fifo, and arbiter. Internal wiring is credible,
+    and no submodule is a pure TODO stub.

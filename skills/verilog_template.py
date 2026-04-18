@@ -25,7 +25,14 @@ class VerilogTemplateSkill(BaseSkill):
     def __init__(self, context_manager: ContextManager) -> None:
         super().__init__(
             name="verilog_template",
-            description="Generate a Verilog module skeleton from a structured spec summary",
+            description="Generate a Verilog RTL skeleton (top module plus optional submodule files) from the most recent structured spec summary. Only usable after a spec summary has been produced.",
+            parameters_schema={
+                "output_path": {
+                    "type": "string",
+                    "required": False,
+                    "description": "Optional filesystem path. If it ends with .v, one Verilog file is saved; otherwise it is treated as a directory and all generated modules are written into it. If omitted, only prints to console.",
+                },
+            },
         )
         self.context_manager = context_manager
 

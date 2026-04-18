@@ -1,3 +1,12 @@
 .env
 __pycache__/
 *.pyc
+data/sessions/
+data/harness_out/
+data/multi_out/
+data/tmp_multi_spec.txt
+data/memory/
+data/sim_runs/
+data/generated_*.v
+.claude/
+systemprompt.txt

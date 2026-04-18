@@ -39,7 +39,19 @@ class SpecSummarySkill(BaseSkill):
     def __init__(self, context_manager: ContextManager, llm_client: BaseLLMClient) -> None:
         super().__init__(
             name="spec_summary",
-            description="Summarize a hardware spec into interfaces, behavior, timing, and open questions",
+            description="Summarize a hardware spec into structured fields: interfaces, behavior, timing, constraints, submodules, interconnects. Use when the user provides or references a hardware specification document.",
+            parameters_schema={
+                "spec_text": {
+                    "type": "string",
+                    "required": False,
+                    "description": "Raw hardware spec text. Provide this OR spec_path.",
+                },
+                "spec_path": {
+                    "type": "string",
+                    "required": False,
+                    "description": "Path to a spec file on disk (relative to project root is fine). Provide this OR spec_text.",
+                },
+            },
         )
         self.context_manager = context_manager
         self.llm_client = llm_client

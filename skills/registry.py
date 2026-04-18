@@ -19,11 +19,15 @@ class SkillRegistry:
             raise KeyError(f"Skill not found: {name}")
         return self._skills[name]
 
-    def list_skills(self) -> list[dict[str, str]]:
+    def has(self, name: str) -> bool:
+        return name in self._skills
+
+    def list_skills(self) -> list[dict[str, Any]]:
         return [
             {
                 "name": skill.name,
                 "description": skill.description,
+                "parameters_schema": skill.parameters_schema,
             }
             for skill in self._skills.values()
         ]

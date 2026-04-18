@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from context.manager import ContextManager
+from skills.rtl_lint import RtlLintSkill
 from skills.spec_summary import SignalSummary, SpecSummaryResult, SubmoduleSummary
 from skills.verilog_template import VerilogTemplateSkill
 
@@ -104,9 +106,44 @@ def main() -> None:
     assert_contains(arbiter_text, "reg [3:0] mask;", "arbiter mask register")
     assert_contains(arbiter_text, "grant_next", "arbiter next grant")
 
+    # Step-3 self-reflection: deterministic lint pass on the produced RTL.
+    # This exercises the same skill the agent loop calls, but without an LLM.
+    lint_cm = ContextManager()
+    lint_cm.set_state(
+        "last_verilog_template",
+        {
+            "verilog_code": top_text,
+            "modules": [
+                {"file_name": "system_top.v", "verilog_code": top_text},
+                {"file_name": "controller.v", "verilog_code": controller_text},
+                {"file_name": "datapath.v", "verilog_code": datapath_text},
+                {"file_name": "fifo.v", "verilog_code": fifo_text},
+                {"file_name": "arbiter.v", "verilog_code": arbiter_text},
+            ],
+        },
+    )
+    lint_skill = RtlLintSkill(lint_cm)
+    lint_result = asyncio.run(lint_skill.execute())
+    if lint_result.module_count != lint_result.endmodule_count:
+        raise AssertionError(
+            f"Lint module/endmodule mismatch: {lint_result.module_count} vs {lint_result.endmodule_count}"
+        )
+    if lint_result.module_count < 5:
+        raise AssertionError(
+            f"Lint expected >=5 modules in aggregate, got {lint_result.module_count}"
+        )
+
     print("Harness regression passed.")
     for file_name in sorted(actual_files):
         print(file_name)
+    print(
+        f"Lint summary: findings={len(lint_result.findings)} "
+        f"modules={lint_result.module_count} "
+        f"posedge_blocks={lint_result.always_posedge_count} "
+        f"reset_missing={lint_result.reset_missing_count} "
+        f"empty_always={lint_result.empty_always_count} "
+        f"todos={lint_result.todo_count}"
+    )
 
 
 if __name__ == "__main__":
