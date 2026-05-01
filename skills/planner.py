@@ -120,6 +120,7 @@ class PlannerSkill(BaseSkill):
                 ],
                 temperature=0.0,
                 max_tokens=600,
+                disable_thinking=True,
             )
         )
 

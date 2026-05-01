@@ -317,14 +317,19 @@ class CriticAgent(BaseAgent):
 class VerifierAgent(BaseAgent):
     """Verification sub-agent that runs a real simulator on the latest RTL.
 
-    The VerifierAgent is intentionally minimal: it takes a testbench path and
-    invokes the ``rtl_sim`` skill exactly once, then turns the simulator's
-    pass/fail into a structured verification verdict. This is the only agent
-    whose verdict is grounded in behavioral execution rather than lint/review
-    text matching.
+    The VerifierAgent dispatches one simulator skill per turn and turns the
+    pass/fail into a structured verdict. Two backends are supported:
+
+    - ``rtl_sim``  — Verilog testbench via iverilog / verilator
+    - ``cocotb_sim`` — Python coroutine testbench via cocotb runner
+
+    The backend is picked from the constructor arguments: a non-empty
+    ``cocotb_test_module`` selects cocotb; otherwise ``testbench_path`` selects
+    rtl_sim. The verdict vocabulary is shared between both backends so callers
+    can treat them interchangeably.
 
     Verdict vocabulary:
-    - ``verified``   : simulator passed (pass marker or PASS assertions > 0)
+    - ``verified``   : simulator passed (pass marker / non-zero PASS / all cases pass)
     - ``sim_failed`` : simulator ran but the design does not match the TB
     - ``compile_error`` : RTL does not compile against the TB
     - ``no_tool``    : neither iverilog nor verilator available on PATH
@@ -343,6 +348,12 @@ class VerifierAgent(BaseAgent):
         pass_tokens: list[str] | None = None,
         fail_tokens: list[str] | None = None,
         extra_sources: list[str] | None = None,
+        cocotb_test_module: str | None = None,
+        cocotb_hdl_toplevel: str | None = None,
+        cocotb_test_dir: str | None = None,
+        cocotb_verilog_sources: list[str] | None = None,
+        cocotb_testcase: str | None = None,
+        tool: str | None = None,
     ) -> None:
         super().__init__(config=config, llm_client=llm_client, orchestrator=orchestrator)
         self.testbench_path = testbench_path
@@ -351,6 +362,12 @@ class VerifierAgent(BaseAgent):
         self.pass_tokens = list(pass_tokens) if pass_tokens else None
         self.fail_tokens = list(fail_tokens) if fail_tokens else None
         self.extra_sources = list(extra_sources) if extra_sources else None
+        self.cocotb_test_module = cocotb_test_module
+        self.cocotb_hdl_toplevel = cocotb_hdl_toplevel
+        self.cocotb_test_dir = cocotb_test_dir
+        self.cocotb_verilog_sources = list(cocotb_verilog_sources) if cocotb_verilog_sources else None
+        self.cocotb_testcase = cocotb_testcase
+        self.tool = tool
 
     async def respond(
         self,
@@ -358,21 +375,33 @@ class VerifierAgent(BaseAgent):
         goal: str,
         round_idx: int,
     ) -> AgentMessage:
-        testbench = self._resolve_testbench()
-        if not testbench:
-            return AgentMessage(
-                round=round_idx,
-                sender=self.config.name,
-                recipient="user",
-                kind="verification",
-                summary="verdict=skipped (no testbench)",
-                content=(
-                    "VerifierAgent skipped simulation: no testbench was provided. "
-                    "Attach one via verifier_testbench state or constructor argument."
-                ),
-                payload={"verdict": "skipped", "status": "no_testbench"},
-            )
+        backend = self._select_backend()
+        if backend == "cocotb":
+            return await self._respond_cocotb(round_idx)
+        if backend == "rtl_sim":
+            return await self._respond_rtl_sim(round_idx, goal)
+        return AgentMessage(
+            round=round_idx,
+            sender=self.config.name,
+            recipient="user",
+            kind="verification",
+            summary="verdict=skipped (no testbench)",
+            content=(
+                "VerifierAgent skipped simulation: neither a Verilog testbench "
+                "nor a cocotb test module was supplied."
+            ),
+            payload={"verdict": "skipped", "status": "no_testbench", "backend": ""},
+        )
 
+    def _select_backend(self) -> str:
+        if self.cocotb_test_module and self.cocotb_hdl_toplevel:
+            return "cocotb"
+        if self._resolve_testbench():
+            return "rtl_sim"
+        return ""
+
+    async def _respond_rtl_sim(self, round_idx: int, goal: str) -> AgentMessage:
+        testbench = self._resolve_testbench()
         sim_args: dict[str, Any] = {"testbench_path": testbench}
         if self.top_module:
             sim_args["top_module"] = self.top_module
@@ -384,6 +413,8 @@ class VerifierAgent(BaseAgent):
             sim_args["fail_tokens"] = self.fail_tokens
         if self.extra_sources:
             sim_args["extra_sources"] = self.extra_sources
+        if self.tool:
+            sim_args["tool"] = self.tool
 
         try:
             sim_result = await self.orchestrator.execute_action("rtl_sim", sim_args, goal)
@@ -395,27 +426,27 @@ class VerifierAgent(BaseAgent):
                 kind="verification",
                 summary="verdict=error",
                 content=f"rtl_sim raised: {error}",
-                payload={"verdict": "error", "status": "error", "error": str(error)},
+                payload={"verdict": "error", "status": "error", "backend": "rtl_sim", "error": str(error)},
             )
 
         status = sim_result.get("status", "error")
         verdict = self._status_to_verdict(status)
         summary = (
-            f"verdict={verdict}, tool={sim_result.get('tool', '')}, "
+            f"verdict={verdict}, backend=rtl_sim, tool={sim_result.get('tool', '')}, "
             f"assertions={sim_result.get('assertions_passed', 0)}/"
             f"{sim_result.get('assertions_passed', 0) + sim_result.get('assertions_failed', 0)}"
         )
-        content = sim_result.get("detail") or ""
         return AgentMessage(
             round=round_idx,
             sender=self.config.name,
             recipient="user" if verdict == "verified" else "actor",
             kind="verification",
             summary=summary,
-            content=content,
+            content=sim_result.get("detail") or "",
             payload={
                 "verdict": verdict,
                 "status": status,
+                "backend": "rtl_sim",
                 "tool": sim_result.get("tool"),
                 "top_module": sim_result.get("top_module"),
                 "testbench": sim_result.get("testbench"),
@@ -426,6 +457,74 @@ class VerifierAgent(BaseAgent):
                 "duration_seconds": sim_result.get("duration_seconds", 0),
                 "run_log_tail": sim_result.get("run_log_tail", ""),
                 "compile_log_tail": sim_result.get("compile_log_tail", ""),
+            },
+        )
+
+    async def _respond_cocotb(self, round_idx: int) -> AgentMessage:
+        sim_args: dict[str, Any] = {
+            "test_module": self.cocotb_test_module,
+            "hdl_toplevel": self.cocotb_hdl_toplevel,
+        }
+        if self.cocotb_test_dir:
+            sim_args["test_dir"] = self.cocotb_test_dir
+        if self.cocotb_verilog_sources:
+            sim_args["verilog_sources"] = self.cocotb_verilog_sources
+        if self.extra_sources:
+            sim_args["extra_sources"] = self.extra_sources
+        if self.timeout_seconds is not None:
+            sim_args["timeout_seconds"] = self.timeout_seconds
+        if self.cocotb_testcase:
+            sim_args["testcase"] = self.cocotb_testcase
+        if self.tool:
+            sim_args["tool"] = self.tool
+
+        try:
+            sim_result = await self.orchestrator.execute_action("cocotb_sim", sim_args, "")
+        except Exception as error:  # noqa: BLE001
+            return AgentMessage(
+                round=round_idx,
+                sender=self.config.name,
+                recipient="user",
+                kind="verification",
+                summary="verdict=error",
+                content=f"cocotb_sim raised: {error}",
+                payload={"verdict": "error", "status": "error", "backend": "cocotb", "error": str(error)},
+            )
+
+        status = sim_result.get("status", "error")
+        verdict = self._status_to_verdict(status)
+        passes = sim_result.get("passes", 0)
+        fails = sim_result.get("fails", 0)
+        skipped = sim_result.get("skipped", 0)
+        total = passes + fails + skipped
+        summary = (
+            f"verdict={verdict}, backend=cocotb, tool={sim_result.get('tool', '')}, "
+            f"cases={passes}/{total} pass ({fails} fail, {skipped} skip)"
+        )
+        return AgentMessage(
+            round=round_idx,
+            sender=self.config.name,
+            recipient="user" if verdict == "verified" else "actor",
+            kind="verification",
+            summary=summary,
+            content=sim_result.get("detail") or "",
+            payload={
+                "verdict": verdict,
+                "status": status,
+                "backend": "cocotb",
+                "tool": sim_result.get("tool"),
+                "hdl_toplevel": sim_result.get("hdl_toplevel"),
+                "test_module": sim_result.get("test_module"),
+                "passes": passes,
+                "fails": fails,
+                "skipped": skipped,
+                "test_cases": sim_result.get("test_cases", []),
+                "event_log": sim_result.get("event_log", []),
+                "compile_ok": sim_result.get("build_ok", False),
+                "run_ok": sim_result.get("run_ok", False),
+                "duration_seconds": sim_result.get("duration_seconds", 0),
+                "run_log_tail": sim_result.get("run_log_tail", ""),
+                "compile_log_tail": sim_result.get("build_log_tail", ""),
             },
         )
 

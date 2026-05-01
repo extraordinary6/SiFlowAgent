@@ -10,6 +10,18 @@ from core.llm_client import BaseLLMClient, LLMRequest
 from skills.base import BaseSkill
 
 
+def _strip_json_fences(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 class SignalSummary(BaseModel):
     name: str = Field(..., description="Signal name")
     direction: str = Field(..., description="input, output, inout, or unknown")
@@ -84,10 +96,11 @@ class SpecSummarySkill(BaseSkill):
                 ],
                 temperature=0.1,
                 max_tokens=1800,
+                disable_thinking=True,
             )
         )
 
-        data = json.loads(raw_json)
+        data = json.loads(_strip_json_fences(raw_json))
         result = SpecSummaryResult(**data)
         result.markdown_summary = self._to_markdown(result)
 

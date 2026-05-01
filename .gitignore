@@ -1,4 +1,5 @@
 .env
+.env.backup*
 __pycache__/
 *.pyc
 data/sessions/
@@ -7,6 +8,10 @@ data/multi_out/
 data/tmp_multi_spec.txt
 data/memory/
 data/sim_runs/
+data/cocotb_build/
+data/cocotb_runs/
+data/probe_runs/
 data/generated_*.v
+harness/cocotb/results.xml
 .claude/
 systemprompt.txt

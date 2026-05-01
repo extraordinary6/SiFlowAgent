@@ -12,6 +12,7 @@ from core.llm_client import BaseLLMClient, LLMRequest
 from core.orchestrator import Orchestrator
 from skills.rtl_lint import RtlLintSkill
 from skills.rtl_sim import RtlSimSkill
+from skills.cocotb_sim import CocotbSimSkill
 
 from harness.eval_scenarios import Scenario
 
@@ -77,6 +78,7 @@ class TierRunOutcome:
     sim_tool: str = ""
     sim_detail: str = ""
     sim_duration_seconds: float = 0.0
+    sim_backend: str = ""
 
 
 def _strip_json_fences(text: str) -> str:
@@ -312,6 +314,12 @@ async def _grade_outcome(
         )
         results.extend(sim_checks)
 
+    if scenario.cocotb.enabled:
+        cocotb_checks = await _run_cocotb_checks(
+            scenario, outcome, context_manager, project_root
+        )
+        results.extend(cocotb_checks)
+
     return results
 
 
@@ -390,6 +398,7 @@ async def _run_simulation_checks(
     outcome.sim_tool = sim_result.tool
     outcome.sim_detail = sim_result.detail
     outcome.sim_duration_seconds = round(sim_result.duration_seconds, 3)
+    outcome.sim_backend = "rtl_sim"
 
     if sim_result.status == "no_tool":
         if sim_conf.require_tool:
@@ -436,6 +445,131 @@ async def _run_simulation_checks(
         CheckResult(
             f"sim.behavior[{sim_result.tool}]",
             passed,
+            detail,
+            "sim",
+        )
+    )
+    return checks
+
+
+async def _run_cocotb_checks(
+    scenario: Scenario,
+    outcome: TierRunOutcome,
+    context_manager: ContextManager,
+    project_root: Path,
+) -> list[CheckResult]:
+    """cocotb counterpart of `_run_simulation_checks`.
+
+    Emits ``cocotb.build[<tool>]`` and ``cocotb.cases[<tool>]`` checks: the
+    first asserts the design elaborates against the cocotb runner, the second
+    asserts every test case in the Python testbench passes.
+    """
+    cocotb_conf = scenario.cocotb
+    checks: list[CheckResult] = []
+
+    last_template = context_manager.get_state("last_verilog_template") or {}
+    aggregated_code = _aggregate_code(last_template)
+    if not aggregated_code and not cocotb_conf.verilog_sources:
+        checks.append(
+            CheckResult(
+                "cocotb.no_rtl",
+                False,
+                "tier produced no RTL and scenario.cocotb.verilog_sources is empty",
+                "sim",
+            )
+        )
+        return checks
+
+    if not cocotb_conf.test_module or not cocotb_conf.hdl_toplevel:
+        checks.append(
+            CheckResult(
+                "cocotb.no_test",
+                False,
+                "scenario.cocotb.enabled=true but test_module / hdl_toplevel missing",
+                "sim",
+            )
+        )
+        return checks
+
+    skill = CocotbSimSkill(
+        context_manager=context_manager,
+        project_root=project_root,
+    )
+    sim_args: dict[str, Any] = {
+        "test_module": cocotb_conf.test_module,
+        "hdl_toplevel": cocotb_conf.hdl_toplevel,
+        "tool": cocotb_conf.tool or "auto",
+        "timeout_seconds": cocotb_conf.timeout_seconds,
+    }
+    if cocotb_conf.test_dir:
+        sim_args["test_dir"] = cocotb_conf.test_dir
+    if cocotb_conf.verilog_sources:
+        sim_args["verilog_sources"] = cocotb_conf.verilog_sources
+    if cocotb_conf.extra_sources:
+        sim_args["extra_sources"] = cocotb_conf.extra_sources
+    if cocotb_conf.testcase:
+        sim_args["testcase"] = cocotb_conf.testcase
+
+    try:
+        sim_result = await skill.execute(**sim_args)
+    except Exception as error:  # noqa: BLE001
+        checks.append(
+            CheckResult(
+                "cocotb.run",
+                False,
+                f"cocotb_sim raised: {error}",
+                "sim",
+            )
+        )
+        return checks
+
+    outcome.sim_status = sim_result.status
+    outcome.sim_tool = sim_result.tool
+    outcome.sim_detail = sim_result.detail
+    outcome.sim_duration_seconds = round(sim_result.duration_seconds, 3)
+    outcome.sim_backend = "cocotb"
+
+    if sim_result.status == "no_tool":
+        if cocotb_conf.require_tool:
+            checks.append(
+                CheckResult(
+                    "cocotb.tool_available",
+                    False,
+                    sim_result.detail or "no simulator on PATH",
+                    "sim",
+                )
+            )
+        else:
+            checks.append(
+                CheckResult(
+                    "cocotb.tool_available[skipped]",
+                    True,
+                    "require_tool=false; cocotb skipped",
+                    "sim",
+                )
+            )
+        return checks
+
+    checks.append(
+        CheckResult(
+            f"cocotb.build[{sim_result.tool}]",
+            sim_result.build_ok,
+            (sim_result.build_log_tail or "")[-200:],
+            "sim",
+        )
+    )
+    if not sim_result.build_ok:
+        return checks
+
+    total = sim_result.passes + sim_result.fails + sim_result.skipped
+    detail = (
+        f"status={sim_result.status} cases={sim_result.passes}/{total} pass "
+        f"({sim_result.fails} fail, {sim_result.skipped} skip) in {sim_result.duration_seconds:.1f}s"
+    )
+    checks.append(
+        CheckResult(
+            f"cocotb.cases[{sim_result.tool}]",
+            sim_result.status == "pass",
             detail,
             "sim",
         )

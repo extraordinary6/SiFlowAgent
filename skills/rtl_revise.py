@@ -112,6 +112,7 @@ class RtlReviseSkill(BaseSkill):
                 ],
                 temperature=0.1,
                 max_tokens=3000,
+                disable_thinking=True,
             )
         )
 

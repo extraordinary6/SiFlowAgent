@@ -1,7 +1,9 @@
 from .base import BaseSkill, SkillMetadata
 from .chat import ChatSkill
+from .cocotb_sim import CocotbCaseResult, CocotbSimResult, CocotbSimSkill
 from .hello import HelloSiFlowSkill
 from .planner import PlannerDecision, PlannerSkill
+from .probe_inject import ProbeEvent, ProbeInjectResult, ProbeInjectSkill
 from .registry import SkillRegistry
 from .router import RouterDecision, RouterSkill
 from .rtl_lint import LintFinding, RtlLintResult, RtlLintSkill
@@ -15,10 +17,16 @@ __all__ = [
     "BaseSkill",
     "SkillMetadata",
     "ChatSkill",
+    "CocotbCaseResult",
+    "CocotbSimResult",
+    "CocotbSimSkill",
     "HelloSiFlowSkill",
     "LintFinding",
     "PlannerDecision",
     "PlannerSkill",
+    "ProbeEvent",
+    "ProbeInjectResult",
+    "ProbeInjectSkill",
     "RevisedModule",
     "RouterDecision",
     "RouterSkill",

@@ -35,7 +35,8 @@ def _print_row(scenario_id: str, outcome: TierRunOutcome) -> None:
         marker = {"pass": "+", "fail": "-", "no_tool": "?", "compile_error": "x", "timeout": "T"}.get(
             outcome.sim_status, "?"
         )
-        sim_cell = f"{outcome.sim_status}{marker}"
+        backend_tag = "[co]" if outcome.sim_backend == "cocotb" else ""
+        sim_cell = f"{outcome.sim_status}{marker}{backend_tag}"
     overall = _fmt_pass(outcome.overall_passed)
     print(
         f"  {scenario_id:<18} | {outcome.tier:<6} | {overall:<5} | "

@@ -91,6 +91,7 @@ class RtlReviewSkill(BaseSkill):
                 ],
                 temperature=0.1,
                 max_tokens=1400,
+                disable_thinking=True,
             )
         )
 

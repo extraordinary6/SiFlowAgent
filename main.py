@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 from context.manager import ContextManager
 from core.agent_loop import AgentStep
@@ -153,6 +154,7 @@ async def main() -> None:
         "  '/agent <goal>'        -> single-agent multi-step loop (step 2)\n"
         "  '/multi <goal>'        -> actor-critic multi-agent coordinator (step 6B)\n"
         "  '/verify <tb.v> [top]' -> run VerifierAgent (iverilog/verilator) on current RTL\n"
+        "  '/verify cocotb <test_module> <hdl_top> [test_dir]' -> run cocotb-backed verification\n"
         "  '/memory'              -> show tiered memory summary (working/session/long_term)\n"
         "  '/chat <msg>'          -> force plain chat skill\n"
         "  '/spec' | '/spec <path>'       -> manual spec summary (control group)\n"
@@ -294,30 +296,66 @@ async def main() -> None:
         if user_input.startswith("/verify"):
             parts = user_input.split()
             if len(parts) < 2:
-                print("Usage: /verify <testbench.v> [top_module]")
-                continue
-            testbench = parts[1]
-            top_module = parts[2] if len(parts) >= 3 else None
-            try:
-                message = await orchestrator.verify_rtl(
-                    testbench_path=testbench,
-                    top_module=top_module,
-                    on_message=_print_agent_message,
+                print(
+                    "Usage:\n"
+                    "  /verify <testbench.v> [top_module]                    # rtl_sim backend\n"
+                    "  /verify cocotb <test_module> <hdl_toplevel> [test_dir]  # cocotb backend"
                 )
+                continue
+            try:
+                if parts[1] == "cocotb":
+                    if len(parts) < 4:
+                        print("Usage: /verify cocotb <test_module> <hdl_toplevel> [test_dir]")
+                        continue
+                    cocotb_kwargs: dict[str, Any] = {
+                        "cocotb_test_module": parts[2],
+                        "cocotb_hdl_toplevel": parts[3],
+                    }
+                    if len(parts) >= 5:
+                        cocotb_kwargs["cocotb_test_dir"] = parts[4]
+                    message = await orchestrator.verify_rtl(
+                        on_message=_print_agent_message,
+                        **cocotb_kwargs,
+                    )
+                else:
+                    testbench = parts[1]
+                    top_module = parts[2] if len(parts) >= 3 else None
+                    message = await orchestrator.verify_rtl(
+                        testbench_path=testbench,
+                        top_module=top_module,
+                        on_message=_print_agent_message,
+                    )
             except Exception as error:
                 print(f"SiFlowAgent> Verify error: {error}")
                 continue
             payload = message.payload or {}
-            print(
-                f"[verify] verdict={payload.get('verdict')} status={payload.get('status')} "
-                f"tool={payload.get('tool')} assertions="
-                f"{payload.get('assertions_passed', 0)}/"
-                f"{payload.get('assertions_passed', 0) + payload.get('assertions_failed', 0)} "
-                f"duration={payload.get('duration_seconds', 0)}s"
-            )
-            if payload.get("run_log_tail"):
-                print("--- run log tail ---")
-                print(payload["run_log_tail"])
+            backend = payload.get("backend", "rtl_sim")
+            if backend == "cocotb":
+                total = (
+                    payload.get("passes", 0)
+                    + payload.get("fails", 0)
+                    + payload.get("skipped", 0)
+                )
+                print(
+                    f"[verify] backend=cocotb verdict={payload.get('verdict')} "
+                    f"status={payload.get('status')} tool={payload.get('tool')} "
+                    f"cases={payload.get('passes', 0)}/{total} pass "
+                    f"({payload.get('fails', 0)} fail, {payload.get('skipped', 0)} skip) "
+                    f"duration={payload.get('duration_seconds', 0)}s"
+                )
+                for ev in (payload.get("event_log") or [])[:10]:
+                    print(f"  {ev}")
+            else:
+                print(
+                    f"[verify] backend=rtl_sim verdict={payload.get('verdict')} "
+                    f"status={payload.get('status')} tool={payload.get('tool')} "
+                    f"assertions={payload.get('assertions_passed', 0)}/"
+                    f"{payload.get('assertions_passed', 0) + payload.get('assertions_failed', 0)} "
+                    f"duration={payload.get('duration_seconds', 0)}s"
+                )
+                if payload.get("run_log_tail"):
+                    print("--- run log tail ---")
+                    print(payload["run_log_tail"])
             continue
         if user_input.lower() == "/memory":
             summary = context_manager.memory_summary()

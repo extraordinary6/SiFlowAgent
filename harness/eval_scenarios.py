@@ -35,6 +35,34 @@ class ScenarioSimulation(BaseModel):
     )
 
 
+class ScenarioCocotb(BaseModel):
+    """Per-scenario behavioral verification via a cocotb Python testbench.
+
+    The cocotb backend is the dual of ``ScenarioSimulation``: instead of pointing
+    at a Verilog testbench, the scenario points at a cocotb test module that
+    drives the DUT through Python coroutines. The eval grader emits
+    ``cocotb.build`` and ``cocotb.cases`` checks that mirror the
+    ``sim.compile`` / ``sim.behavior`` checks of ``rtl_sim``.
+    """
+
+    enabled: bool = Field(default=False)
+    test_module: str = Field(default="", description="Dotted module name (e.g. test_counter_cocotb).")
+    hdl_toplevel: str = Field(default="", description="Name of the DUT module instantiated by the test.")
+    test_dir: str = Field(default="", description="Directory containing the test module .py file. Defaults to harness/cocotb.")
+    verilog_sources: list[str] = Field(
+        default_factory=list,
+        description="Override for the DUT sources. Empty = use the tier's last_verilog_template.",
+    )
+    extra_sources: list[str] = Field(default_factory=list)
+    tool: str = Field(default="auto", description="icarus | verilator | auto")
+    timeout_seconds: float = Field(default=60.0)
+    testcase: str = Field(default="", description="Optional cocotb testcase filter (regex/string).")
+    require_tool: bool = Field(
+        default=True,
+        description="If true, missing simulator is an explicit failure; if false, recorded as skipped.",
+    )
+
+
 class ScenarioChecks(BaseModel):
     """Deterministic, reproducible checks applied to a tier's output."""
 
@@ -72,6 +100,7 @@ class Scenario(BaseModel):
     checks: ScenarioChecks = Field(default_factory=ScenarioChecks)
     judge: ScenarioJudge = Field(default_factory=ScenarioJudge)
     simulation: ScenarioSimulation = Field(default_factory=ScenarioSimulation)
+    cocotb: ScenarioCocotb = Field(default_factory=ScenarioCocotb)
 
 
 def load_scenarios(scenarios_dir: Path, only_ids: list[str] | None = None) -> list[Scenario]:

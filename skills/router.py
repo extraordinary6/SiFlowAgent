@@ -97,6 +97,7 @@ class RouterSkill(BaseSkill):
                 ],
                 temperature=0.0,
                 max_tokens=400,
+                disable_thinking=True,
             )
         )
 

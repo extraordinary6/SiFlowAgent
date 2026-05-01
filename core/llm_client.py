@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+from loguru import logger
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
@@ -17,7 +18,28 @@ class LLMRequest(BaseModel):
     system_prompt: str = Field(..., description="System prompt for the model")
     messages: list[dict[str, str]] = Field(default_factory=list, description="Conversation history")
     temperature: float = Field(default=0.2, description="Sampling temperature")
-    max_tokens: int = Field(default=1024, description="Maximum output tokens")
+    max_tokens: int = Field(default=1024, description="Answer-token budget. Thinking budget (when enabled) is added on top.")
+    disable_thinking: bool = Field(
+        default=False,
+        description=(
+            "Suppress extended reasoning. OpenAI-compatible: passes "
+            "reasoning_effort=minimal via extra_body. Messages API: passes "
+            "thinking={type:'disabled'} in the payload. Has no effect on "
+            "non-thinking models. Mutually exclusive with thinking_budget — "
+            "if both are set, thinking_budget wins."
+        ),
+    )
+    thinking_budget: int | None = Field(
+        default=None,
+        description=(
+            "Opt in to extended reasoning with this many tokens of budget. "
+            "OpenAI-compatible: maps to reasoning_effort low/medium/high "
+            "(API does not expose token-precise control). Messages API: "
+            "passes thinking={type:'enabled', budget_tokens:N} and bumps "
+            "max_tokens by N so the answer is not starved. None means the "
+            "backend default."
+        ),
+    )
 
 
 class OpenAICompatibleConfig(BaseModel):
@@ -55,6 +77,41 @@ def _sanitize_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
     ]
 
 
+def _budget_to_effort(budget: int) -> str:
+    """Map a thinking-token budget to OpenAI's reasoning_effort tier.
+
+    OpenAI's API exposes only four discrete tiers, so token-precise control
+    is not possible on that backend; the bands below are a coarse heuristic.
+    """
+    if budget <= 0:
+        return "minimal"
+    if budget < 1024:
+        return "low"
+    if budget < 4096:
+        return "medium"
+    return "high"
+
+
+def _resolve_thinking_mode(request: LLMRequest) -> tuple[str, int]:
+    """Reduce the (disable_thinking, thinking_budget) pair to one decision.
+
+    Returns ``("budget", N)``, ``("disabled", 0)``, or ``("default", 0)``.
+    When both fields are set, ``thinking_budget`` wins and the conflict is
+    logged once so callers notice. Mutual exclusivity is documented on the
+    ``LLMRequest`` fields.
+    """
+    if request.thinking_budget is not None and request.thinking_budget > 0:
+        if request.disable_thinking:
+            logger.warning(
+                "LLMRequest: disable_thinking=True ignored because thinking_budget={} is set",
+                request.thinking_budget,
+            )
+        return "budget", int(request.thinking_budget)
+    if request.disable_thinking:
+        return "disabled", 0
+    return "default", 0
+
+
 class OpenAICompatibleClient(BaseLLMClient):
     def __init__(self, config: OpenAICompatibleConfig) -> None:
         self.config = config
@@ -65,6 +122,16 @@ class OpenAICompatibleClient(BaseLLMClient):
         )
 
     async def generate(self, request: LLMRequest) -> str:
+        kwargs: dict[str, Any] = {}
+        mode, budget = _resolve_thinking_mode(request)
+        if mode == "disabled":
+            kwargs["extra_body"] = {"reasoning_effort": "minimal"}
+        elif mode == "budget":
+            # OpenAI's reasoning_effort is a tier, not a token count, so the
+            # budget gets bucketed. Token-level precision is only available on
+            # the messages API path below.
+            kwargs["extra_body"] = {"reasoning_effort": _budget_to_effort(budget)}
+
         response = await self.client.chat.completions.create(
             model=self.config.model,
             messages=[
@@ -73,6 +140,7 @@ class OpenAICompatibleClient(BaseLLMClient):
             ],
             temperature=request.temperature,
             max_tokens=request.max_tokens,
+            **kwargs,
         )
 
         content = response.choices[0].message.content
@@ -93,6 +161,17 @@ class MessagesAPIClient(BaseLLMClient):
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
         }
+        mode, budget = _resolve_thinking_mode(request)
+        if mode == "disabled":
+            # Anthropic's `thinking.type=disabled` switch. Relays that proxy GLM,
+            # Kimi-think, etc. usually accept the same key; backends that do not
+            # support extended thinking ignore the field harmlessly.
+            payload["thinking"] = {"type": "disabled"}
+        elif mode == "budget":
+            # The caller's max_tokens describes the *answer* size; the thinking
+            # budget is added on top so reasoning cannot starve the answer.
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            payload["max_tokens"] = request.max_tokens + budget
         headers = {
             "x-api-key": self.config.api_key,
             "anthropic-version": self.config.anthropic_version,
@@ -111,9 +190,20 @@ class MessagesAPIClient(BaseLLMClient):
         content_blocks = data.get("content", [])
         text_parts = [block.get("text", "") for block in content_blocks if block.get("type") == "text"]
         content = "\n".join(part for part in text_parts if part).strip()
-        if not content:
-            raise ValueError("Messages API returned empty content")
-        return content
+        if content:
+            return content
+
+        # Fallback for thinking-style models (Claude extended thinking, GLM-5.x,
+        # Kimi-think, etc.) that may return only ``type: "thinking"`` blocks when
+        # the token budget is exhausted by the reasoning trace. Surfacing the
+        # thinking text lets downstream parsers fail loudly with diagnosable
+        # input instead of crashing on an empty string.
+        thinking_parts = [block.get("thinking", "") for block in content_blocks if block.get("type") == "thinking"]
+        thinking = "\n".join(part for part in thinking_parts if part).strip()
+        if thinking:
+            return thinking
+
+        raise ValueError("Messages API returned empty content")
 
 
 def load_openai_compatible_config_from_env() -> OpenAICompatibleConfig | None:

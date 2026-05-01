@@ -23,6 +23,8 @@ from skills.rtl_lint import RtlLintSkill
 from skills.rtl_review import RtlReviewSkill
 from skills.rtl_revise import RtlReviseSkill
 from skills.rtl_sim import RtlSimResult, RtlSimSkill
+from skills.cocotb_sim import CocotbSimResult, CocotbSimSkill
+from skills.probe_inject import ProbeInjectResult, ProbeInjectSkill
 from skills.spec_summary import SpecSummarySkill
 from skills.verilog_template import VerilogModuleFile, VerilogTemplateResult, VerilogTemplateSkill
 
@@ -66,6 +68,18 @@ class Orchestrator:
         self.skill_registry.register(RtlLintSkill(context_manager=self.context_manager))
         self.skill_registry.register(
             RtlSimSkill(
+                context_manager=self.context_manager,
+                project_root=self.project_root,
+            )
+        )
+        self.skill_registry.register(
+            CocotbSimSkill(
+                context_manager=self.context_manager,
+                project_root=self.project_root,
+            )
+        )
+        self.skill_registry.register(
+            ProbeInjectSkill(
                 context_manager=self.context_manager,
                 project_root=self.project_root,
             )
@@ -383,6 +397,42 @@ class Orchestrator:
                 "run_log_tail": (sim.run_log or "")[-800:],
             }
 
+        if skill_name == "cocotb_sim":
+            sim_args: dict[str, Any] = {}
+            for key in (
+                "test_module",
+                "hdl_toplevel",
+                "test_dir",
+                "verilog_sources",
+                "extra_sources",
+                "tool",
+                "timeout_seconds",
+                "testcase",
+                "verilog_code",
+            ):
+                if args.get(key) is not None:
+                    sim_args[key] = args[key]
+            cocotb_sim: CocotbSimResult = await self.skill_registry.execute("cocotb_sim", **sim_args)
+            return {
+                "backend": "cocotb",
+                "tool": cocotb_sim.tool,
+                "status": cocotb_sim.status,
+                "build_ok": cocotb_sim.build_ok,
+                "run_ok": cocotb_sim.run_ok,
+                "passes": cocotb_sim.passes,
+                "fails": cocotb_sim.fails,
+                "skipped": cocotb_sim.skipped,
+                "duration_seconds": round(cocotb_sim.duration_seconds, 3),
+                "hdl_toplevel": cocotb_sim.hdl_toplevel,
+                "test_module": cocotb_sim.test_module,
+                "verilog_sources": cocotb_sim.verilog_sources,
+                "test_cases": [case.model_dump() for case in cocotb_sim.test_cases],
+                "event_log": cocotb_sim.event_log,
+                "detail": cocotb_sim.detail,
+                "build_log_tail": cocotb_sim.build_log_tail,
+                "run_log_tail": cocotb_sim.run_log_tail,
+            }
+
         raise RuntimeError(f"No dispatcher implemented for skill: {skill_name}")
 
     def make_observation(self, skill_name: str, result: Any) -> str:
@@ -446,6 +496,22 @@ class Orchestrator:
                 f"pass_marker={result.get('pass_marker_seen')}, "
                 f"assertions={result.get('assertions_passed', 0)}/"
                 f"{result.get('assertions_passed', 0) + result.get('assertions_failed', 0)} "
+                f"({result.get('duration_seconds', 0)}s). "
+                f"detail={(result.get('detail') or '')[:200]}"
+            )
+
+        if skill_name == "cocotb_sim" and isinstance(result, dict):
+            status = result.get("status", "error")
+            tool = result.get("tool", "")
+            passes = result.get("passes", 0)
+            fails = result.get("fails", 0)
+            skipped = result.get("skipped", 0)
+            total = passes + fails + skipped
+            return (
+                f"cocotb {status} via {tool or 'no_tool'}: "
+                f"build_ok={result.get('build_ok')}, run_ok={result.get('run_ok')}, "
+                f"cases={passes}/{total} pass ({fails} fail, {skipped} skip) "
+                f"on {result.get('hdl_toplevel', '?')} "
                 f"({result.get('duration_seconds', 0)}s). "
                 f"detail={(result.get('detail') or '')[:200]}"
             )
@@ -688,13 +754,25 @@ class Orchestrator:
         pass_tokens: list[str] | None = None,
         fail_tokens: list[str] | None = None,
         extra_sources: list[str] | None = None,
+        cocotb_test_module: str | None = None,
+        cocotb_hdl_toplevel: str | None = None,
+        cocotb_test_dir: str | None = None,
+        cocotb_verilog_sources: list[str] | None = None,
+        cocotb_testcase: str | None = None,
+        tool: str | None = None,
         llm_client: BaseLLMClient | None = None,
     ) -> VerifierAgent:
-        """Build a VerifierAgent. An LLM client is not strictly required because
-        the agent only orchestrates the ``rtl_sim`` tool, but we keep the
-        signature uniform with the actor/critic builders in case future
-        extensions want LLM-driven retry reasoning.
+        """Build a VerifierAgent. The agent supports two simulator backends —
+        ``rtl_sim`` (Verilog testbench) and ``cocotb_sim`` (Python testbench).
+        Pass cocotb_* arguments to select the cocotb backend; otherwise the
+        Verilog-testbench path is used.
+
+        An LLM client is not strictly required because the agent only
+        orchestrates simulator skills, but the signature stays uniform with
+        the actor/critic builders in case future extensions add LLM-driven
+        retry reasoning.
         """
+        backend_skills = ["rtl_sim", "cocotb_sim"]
         config = AgentConfig(
             name="verifier",
             persona="verification engineer",
@@ -705,7 +783,7 @@ class Orchestrator:
             ),
             temperature=0.0,
             max_tokens=200,
-            allowed_skills=["rtl_sim"],
+            allowed_skills=backend_skills,
         )
         return VerifierAgent(
             config=config,
@@ -717,16 +795,28 @@ class Orchestrator:
             pass_tokens=pass_tokens,
             fail_tokens=fail_tokens,
             extra_sources=extra_sources,
+            cocotb_test_module=cocotb_test_module,
+            cocotb_hdl_toplevel=cocotb_hdl_toplevel,
+            cocotb_test_dir=cocotb_test_dir,
+            cocotb_verilog_sources=cocotb_verilog_sources,
+            cocotb_testcase=cocotb_testcase,
+            tool=tool,
         )
 
     async def verify_rtl(
         self,
-        testbench_path: str,
+        testbench_path: str | None = None,
         top_module: str | None = None,
         timeout_seconds: float | None = None,
         pass_tokens: list[str] | None = None,
         fail_tokens: list[str] | None = None,
         extra_sources: list[str] | None = None,
+        cocotb_test_module: str | None = None,
+        cocotb_hdl_toplevel: str | None = None,
+        cocotb_test_dir: str | None = None,
+        cocotb_verilog_sources: list[str] | None = None,
+        cocotb_testcase: str | None = None,
+        tool: str | None = None,
         on_message: MessageCallback | None = None,
     ) -> AgentMessage:
         """Single-shot verification: run VerifierAgent once against the current RTL.
@@ -735,6 +825,9 @@ class Orchestrator:
         so the freshly-produced RTL is already stored in
         ``last_verilog_template``. The returned AgentMessage contains the
         structured verdict under ``payload``.
+
+        Pass cocotb_* arguments to use the cocotb backend; otherwise the
+        Verilog testbench (``testbench_path``) is used.
         """
         verifier = self.build_verifier_agent(
             testbench_path=testbench_path,
@@ -743,15 +836,25 @@ class Orchestrator:
             pass_tokens=pass_tokens,
             fail_tokens=fail_tokens,
             extra_sources=extra_sources,
+            cocotb_test_module=cocotb_test_module,
+            cocotb_hdl_toplevel=cocotb_hdl_toplevel,
+            cocotb_test_dir=cocotb_test_dir,
+            cocotb_verilog_sources=cocotb_verilog_sources,
+            cocotb_testcase=cocotb_testcase,
+            tool=tool,
         )
         message = await verifier.respond(transcript=[], goal="verify", round_idx=1)
+        payload = message.payload or {}
         self.context_manager.set_state(
             "last_verification",
             {
-                "verdict": (message.payload or {}).get("verdict"),
-                "status": (message.payload or {}).get("status"),
+                "verdict": payload.get("verdict"),
+                "status": payload.get("status"),
+                "backend": payload.get("backend"),
                 "testbench": testbench_path,
                 "top_module": top_module,
+                "cocotb_test_module": cocotb_test_module,
+                "cocotb_hdl_toplevel": cocotb_hdl_toplevel,
             },
         )
         if on_message is not None:

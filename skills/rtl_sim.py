@@ -357,7 +357,9 @@ class RtlSimSkill(BaseSkill):
         pass_tokens: tuple[str, ...],
         fail_tokens: tuple[str, ...],
     ) -> None:
-        if result.status in {"compile_error", "no_tool", "timeout", "error"}:
+        # Only short-circuit on terminal states the runner already set itself.
+        # ``error`` is the field default and gets reclassified below.
+        if result.status in {"compile_error", "no_tool", "timeout"}:
             return
         log = result.run_log or ""
         result.pass_marker_seen = any(tok and tok in log for tok in pass_tokens)

@@ -1,0 +1,49 @@
+id: counter_cocotb
+description: |
+  Same goal as counter_basic but verifies behavior via the cocotb backend
+  (Python testbench at harness/cocotb/test_counter_cocotb.py) instead of the
+  Verilog testbench. Exercises the dual-backend wiring of Phase 10C: the
+  scenario's cocotb: block triggers cocotb_sim against the tier's final RTL
+  (taken from last_verilog_template), and emits cocotb.build / cocotb.cases
+  checks alongside the regular text-match checks.
+preload_spec_text: |
+  Module name: counter
+  Inputs: clk, rst_n
+  Outputs: cnt[7:0]
+  Behavior: increments cnt on every rising edge of clk. rst_n is active low and
+    synchronously drives cnt to 0 when asserted.
+  Timing: sample inputs on rising edge of clk. rst_n is active low.
+  Constraints: keep one output signal per always block.
+goal: generate RTL from the current spec summary and be ready for review.
+tiers:
+  - router
+  - agent
+  - multi
+checks:
+  require_completed: true
+  min_modules: 1
+  lint:
+    module_count_min: 1
+    reset_missing_count_max: 0
+    empty_always_count_max: 0
+  contains_all:
+    - "module counter"
+    - "always @"
+  not_contains:
+    - "// TODO: implement top-level integration logic"
+  max_llm_calls:
+    router: 4
+    agent: 14
+    multi: 22
+judge:
+  enabled: false
+cocotb:
+  enabled: true
+  test_module: test_counter_cocotb
+  hdl_toplevel: counter
+  test_dir: harness/cocotb
+  tool: auto
+  timeout_seconds: 60
+  # Fail loudly on machines without iverilog/verilator; flip to false to record
+  # "skipped" instead so the scenario still passes on a bare machine.
+  require_tool: true
