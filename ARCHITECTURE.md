@@ -497,24 +497,23 @@ cost / quality tradeoff the eval harness is designed to surface.
 
 ---
 
-## Phase 10 — cocotb-based verification (10A–B done, 10C–D planned)
+## Phase 10 — cocotb-based verification (done)
 
-A Python-driven verification layer using [cocotb](https://www.cocotb.org/) is the next
-architectural milestone. It targets a limitation of the current `rtl_sim` skill: the
-testbench is fixed Verilog and the agent can only observe `$display` text that is
-decided ahead of time. cocotb keeps the DUT signals as live Python objects during
-simulation, so an agent can author a short Python probe, sample exactly the signals
-and time window it wants, structure the result, and iterate — no waveform file ever
-needs to touch disk.
+A Python-driven verification layer using [cocotb](https://www.cocotb.org/). The core
+motivation is the limitation of `rtl_sim`: the testbench is fixed Verilog and the
+agent can only observe `$display` text decided ahead of time. cocotb keeps DUT
+signals as live Python objects during simulation, so an agent can author a short
+Python probe, sample exactly the signals and time window it wants, structure the
+result, and iterate — no waveform file ever needs to touch disk.
 
 Phased plan:
 
 | Sub-phase | Status | Goal | Notes |
 |-----------|--------|------|-------|
-| 10A | **done** | Install cocotb and port `counter_tb.v` to a Python testbench; verify the iverilog backend via `cocotb_tools.runner.get_runner("icarus")` | Lives under `harness/cocotb/`. cocotb 2.0 moved the runner to `cocotb_tools.runner`. The runner must pass `timescale=("1ns", "1ps")` or 100 MHz clocks fail with "unable to represent 10ns at precision 1e0" |
-| 10B | **done** | New skill `cocotb_sim` returning a `CocotbSimResult(passes, fails, event_log)` | Mirrors the `rtl_sim` contract so the eval harness can consume either backend |
-| 10C | planned | `VerifierAgent` dual-backend: use cocotb when a Python test is present, fall back to `rtl_sim` otherwise; add a `cocotb:` block to scenario YAML | Keeps existing scenarios working unchanged |
-| 10D | planned | Probe-injection closed loop: the agent generates small cocotb coroutines as probes, observes structured event streams, and feeds them back as critic-style evidence | The core mechanism for agent-driven waveform debugging without multimodal input |
+| 10A | **done** | Install cocotb and port `counter_tb.v` to a Python testbench | Lives under `harness/cocotb/`. cocotb 2.0 moved the runner to `cocotb_tools.runner`. The runner must pass `timescale=("1ns", "1ps")` or 100 MHz clocks fail with "unable to represent 10ns at precision 1e0" |
+| 10B | **done** | Skill `cocotb_sim` returning a `CocotbSimResult(passes, fails, event_log)` mirroring the `rtl_sim` contract | Eval harness can consume either backend |
+| 10C | **done** | `VerifierAgent` dual-backend; `cocotb:` block in scenario YAML; `/verify cocotb …` CLI form | Existing `simulation:` scenarios keep working |
+| 10D | **done** | Probe-injection closed loop: agent generates cocotb coroutines, observes structured event streams | Substrate for agent-driven waveform debugging without multimodal input |
 
 The motivation for sub-phase 10D is the observation that current VLMs do not read
 waveform images reliably, whereas targeted text-form signal transitions are both
@@ -582,6 +581,91 @@ on counter (0.625s). detail=3/3 cases passed
 Long-term memory records each run under the `sim_history` namespace with a
 `backend: "cocotb"` tag so a future Phase 13 mining pass can compare the two
 backends side by side.
+
+### 10C — what shipped
+
+`VerifierAgent` now dispatches to either backend based on its constructor
+arguments. The verdict vocabulary is shared (`verified` / `sim_failed` /
+`compile_error` / `no_tool` / `skipped` / `error`) so downstream consumers do not
+need to know which simulator ran.
+
+| Caller surface | rtl_sim path | cocotb path |
+|----------------|--------------|-------------|
+| `Orchestrator.verify_rtl(...)` | `testbench_path=` | `cocotb_test_module=` + `cocotb_hdl_toplevel=` |
+| CLI | `/verify <tb.v> [top]` | `/verify cocotb <test_module> <hdl_top> [test_dir]` |
+| Scenario YAML | `simulation:` block | `cocotb:` block (see `harness/scenarios/counter_cocotb.yaml`) |
+
+The eval harness emits one of two pairs of checks depending on the active block:
+
+| Backend | Checks emitted | Maps to |
+|---------|----------------|---------|
+| rtl_sim | `sim.compile[<tool>]` + `sim.behavior[<tool>]` | RTL elaborates + pass marker seen |
+| cocotb | `cocotb.build[<tool>]` + `cocotb.cases[<tool>]` | DUT elaborates under cocotb + every test case passes |
+
+`harness/eval.py`'s `sim` column tags cocotb runs with `[co]` so the dual backends
+are visible side by side in the report.
+
+This phase also fixed a long-standing latent bug in `RtlSimSkill._classify`: the
+early-return guard included the field's default value `"error"`, so successful runs
+left status at `"error"` instead of being reclassified to `"pass"`. The bug was
+masked because Phase 9 only ever exercised the `compile_error` path against an
+interface-mismatched TB.
+
+### 10D — what shipped
+
+`skills/probe_inject.py::ProbeInjectSkill` lets the agent author a cocotb coroutine
+*body* at runtime, run it, and read back a typed event log. The skill writes a
+tempdir test module that wraps the body inside `async def probe(dut)`, exposes a
+small `emit(tag, **kv)` helper, and delegates the build + run to `cocotb_sim`.
+Events are appended to a log file inside the run directory (the cocotb simulator
+runs in a subprocess whose stdout never reaches the parent, so a file is the
+reliable cross-process channel).
+
+`emit(tag, **kv)` writes one line per event:
+`tag=<name> t=<sim_ns>ns k1=v1 k2=v2 ...`. The skill parses these into a
+`ProbeEvent` list:
+
+```python
+class ProbeEvent(BaseModel):
+    tag: str
+    sim_time_ns: float | None
+    data: dict[str, str]
+```
+
+Verified end-to-end on the counter DUT with a probe body that releases reset,
+samples `dut.cnt` for eight cycles, and emits `final`:
+
+```text
+[reset_held] t=20.0ns  | cnt=0
+[sample]     t=31.0ns  | cycle=0, cnt=1
+[sample]     t=41.0ns  | cycle=1, cnt=2
+...
+[sample]     t=101.0ns | cycle=7, cnt=8
+[final]      t=101.0ns | cnt=8
+```
+
+This is the substrate for the agent-driven waveform-debugging loop: a critic that
+reads `event_count` typed events is much more tractable than one that reads pixels
+of a waveform viewer. The agent loop that *drives* probe → critique → next-probe
+lives one layer up and is left to future work (Phase 13 will mine accumulated
+probe traces; the actor-critic coordinator could eventually invoke probes between
+revise rounds).
+
+Skill contract:
+
+| Param | Required | Notes |
+|-------|----------|-------|
+| `probe_body` | yes | Python source for the coroutine body, indented inside `async def probe(dut)` |
+| `hdl_toplevel` | yes | DUT module name |
+| `verilog_sources` | no | Defaults to `last_verilog_template` |
+| `tool` | no | `icarus` / `verilator` / `auto` |
+| `timeout_seconds` | no | Default 30s |
+
+The body has access to: `cocotb`, `Clock`, `RisingEdge` / `FallingEdge` / `Edge` /
+`Timer` / `ClockCycles` / `ReadOnly` / `ReadWrite` / `NextTimeStep` / `Combine` /
+`Join` / `First`, plus `emit()`. `probe_body` is exec'd verbatim; treat it as
+trusted Python the same way you treat any agent-generated code you would run
+locally.
 
 ---
 
